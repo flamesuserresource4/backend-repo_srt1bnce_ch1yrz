@@ -1,13 +1,20 @@
 import os
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from bson import ObjectId
 from datetime import datetime
 
 from database import db, create_document, get_documents
 from schemas import Patient, Appointment, Feedback, MessageLog
+
+# Twilio
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+ON_CALL_NUMBER = os.getenv("ON_CALL_NUMBER")  # optional: route emergencies/live transfer
 
 app = FastAPI(title="AI Dental Receptionist API")
 
@@ -64,6 +71,13 @@ def test_database():
             response["database"] = "⚠️ Available but not initialized"
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:120]}"
+    # Twilio readiness
+    response["twilio"] = {
+        "account_sid": "✅ Set" if TWILIO_ACCOUNT_SID else "❌ Not Set",
+        "auth_token": "✅ Set" if TWILIO_AUTH_TOKEN else "❌ Not Set",
+        "from_number": "✅ Set" if TWILIO_PHONE_NUMBER else "❌ Not Set",
+        "on_call_number": "✅ Set" if ON_CALL_NUMBER else "⚠️ Optional"
+    }
     return response
 
 # Appointment endpoints
@@ -219,6 +233,109 @@ def insurance_check(req: InsuranceRequest):
     eligible = req.member_id[-1].isdigit() and int(req.member_id[-1]) % 2 == 0
     benefits = {"preventive": "80%", "basic": "60%", "major": "40%"} if eligible else {}
     return {"eligible": eligible, "benefits": benefits}
+
+# -----------------
+# Twilio Voice APIs
+# -----------------
+class OutboundCallRequest(BaseModel):
+    to_number: str = Field(..., description="E.164 destination, e.g. +15551234567")
+    message: Optional[str] = Field(None, description="What to say on answer")
+    patient_id: Optional[str] = Field(None, description="Optional patient context to log")
+
+
+def _twilio_client():
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER):
+        raise HTTPException(status_code=400, detail="Twilio env vars missing (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER)")
+    try:
+        from twilio.rest import Client
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Twilio SDK not available: {str(e)}")
+    return Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+@app.post("/voice/call")
+async def start_outbound_call(req: Request, body: OutboundCallRequest):
+    client = _twilio_client()
+    # Build absolute URLs for Twilio webhooks
+    answer_url = str(req.url_for("voice_answer"))
+    status_url = str(req.url_for("voice_status"))
+    # Encode simple params for dynamic message
+    from urllib.parse import urlencode
+    params = {"msg": body.message or "This is your dental office calling. Please contact us if you need assistance.", "patient_id": body.patient_id or ""}
+    if not answer_url.startswith("http"):
+        # Fallback; in this environment url_for should be absolute
+        raise HTTPException(status_code=500, detail="Could not construct webhook URL")
+    answer_url_with_qs = f"{answer_url}?{urlencode(params)}"
+
+    try:
+        call = client.calls.create(
+            to=body.to_number,
+            from_=TWILIO_PHONE_NUMBER,
+            url=answer_url_with_qs,
+            status_callback=status_url,
+            status_callback_method="POST",
+            status_callback_event=["initiated", "ringing", "answered", "completed"],
+        )
+        try:
+            create_document("messagelog", MessageLog(channel="call", direction="outbound", content=f"Call initiated to {body.to_number} - SID {call.sid}", user_context={"patient_id": body.patient_id} if body.patient_id else None))
+        except Exception:
+            pass
+        return {"sid": call.sid, "to": body.to_number}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.api_route("/voice/answer", methods=["GET", "POST"])
+async def voice_answer(req: Request):
+    try:
+        from twilio.twiml.voice_response import VoiceResponse, Gather, Say, Dial
+    except Exception as e:
+        return Response(content="<Response><Say>Twilio not configured.</Say></Response>", media_type="application/xml")
+
+    # Pull querystring to generate dynamic message
+    q = dict(req.query_params)
+    msg = q.get("msg") or "Hello from your dental office. This is a test call."
+
+    vr = VoiceResponse()
+    # Simple menu: 0 to connect to on-call
+    gather = vr.gather(num_digits=1, action=str(req.url_for("voice_menu")), method="POST", timeout=4)
+    gather.say(msg)
+    gather.say("Press 0 to be connected to our on call dentist. Or stay on the line to end this message.")
+    # If no input, just hang up politely
+    vr.pause(length=1)
+    vr.say("Goodbye.")
+    vr.hangup()
+    return Response(content=str(vr), media_type="application/xml")
+
+@app.api_route("/voice/menu", methods=["POST"])
+async def voice_menu(req: Request):
+    try:
+        from twilio.twiml.voice_response import VoiceResponse, Dial
+    except Exception:
+        return Response(content="<Response><Say>Error.</Say></Response>", media_type="application/xml")
+
+    form = await req.form()
+    digits = form.get("Digits") if form else None
+    vr = VoiceResponse()
+    if digits == "0" and ON_CALL_NUMBER:
+        vr.say("Connecting you now.")
+        dial = vr.dial(caller_id=TWILIO_PHONE_NUMBER)
+        dial.number(ON_CALL_NUMBER)
+    else:
+        vr.say("Thank you. Goodbye.")
+        vr.hangup()
+    return Response(content=str(vr), media_type="application/xml")
+
+@app.api_route("/voice/status", methods=["POST"]) 
+async def voice_status(req: Request):
+    form = await req.form()
+    call_sid = form.get("CallSid") if form else None
+    call_status = form.get("CallStatus") if form else None
+    to = form.get("To") if form else None
+    from_ = form.get("From") if form else None
+    try:
+        create_document("messagelog", MessageLog(channel="call", direction="inbound", content=f"Status {call_status} for {call_sid}", user_context={"to": to, "from": from_}))
+    except Exception:
+        pass
+    return {"ok": True}
 
 if __name__ == "__main__":
     import uvicorn
