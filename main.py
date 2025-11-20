@@ -181,7 +181,6 @@ class ChatRequest(BaseModel):
 COMMON_QA = {
     "hours": "We are open Mon-Fri 8am-6pm and Sat 9am-2pm.",
     "location": "We are located at 123 Smile St, Suite 100.",
-    "insurance": "We accept most major insurance plans. Please have your member ID ready.",
     "emergency": "If you are experiencing severe pain, swelling, or trauma, please call 911 or go to the nearest ER. For urgent dental issues, we can connect you to the on-call dentist.",
 }
 
@@ -194,7 +193,7 @@ def chat_bot(req: ChatRequest):
             reply = ans
             break
     if not reply:
-        reply = "Thanks for your message. I can help with hours, location, insurance, scheduling, and more."
+        reply = "Thanks for your message. I can help with hours, location, scheduling, and more."
     # log
     try:
         create_document("messagelog", MessageLog(channel="chat", direction="inbound", content=req.message))
@@ -221,19 +220,6 @@ def estimate_cost(req: EstimateRequest):
         raise HTTPException(status_code=404, detail="Procedure not found")
     return {"procedure_code": req.procedure_code.upper(), "estimated_cost": base}
 
-# Placeholder insurance verification endpoint (mock)
-class InsuranceRequest(BaseModel):
-    provider: str
-    member_id: str
-    dob: Optional[str] = None
-
-@app.post("/insurance/check")
-def insurance_check(req: InsuranceRequest):
-    # Mock logic: if member_id ends with even digit -> eligible
-    eligible = req.member_id[-1].isdigit() and int(req.member_id[-1]) % 2 == 0
-    benefits = {"preventive": "80%", "basic": "60%", "major": "40%"} if eligible else {}
-    return {"eligible": eligible, "benefits": benefits}
-
 # -----------------
 # Twilio Voice APIs
 # -----------------
@@ -241,6 +227,7 @@ class OutboundCallRequest(BaseModel):
     to_number: str = Field(..., description="E.164 destination, e.g. +15551234567")
     message: Optional[str] = Field(None, description="What to say on answer")
     patient_id: Optional[str] = Field(None, description="Optional patient context to log")
+
 
 
 def _twilio_client():

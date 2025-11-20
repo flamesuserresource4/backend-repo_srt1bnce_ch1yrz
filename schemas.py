@@ -13,8 +13,6 @@ class Patient(BaseModel):
     email: Optional[EmailStr] = Field(None, description="Patient email")
     phone: Optional[str] = Field(None, description="E.164 phone number if available")
     date_of_birth: Optional[str] = Field(None, description="YYYY-MM-DD")
-    insurance_provider: Optional[str] = Field(None, description="Insurance company name")
-    insurance_member_id: Optional[str] = Field(None, description="Insurance member/plan id")
     address: Optional[str] = Field(None, description="Mailing address")
     notes: Optional[str] = Field(None, description="Additional notes")
 
