@@ -1,48 +1,41 @@
 """
-Database Schemas
+Database Schemas for Dental Receptionist App
 
-Define your MongoDB collection schemas here using Pydantic models.
-These schemas are used for data validation in your application.
-
-Each Pydantic model represents a collection in your database.
-Model name is converted to lowercase for the collection name:
-- User -> "user" collection
-- Product -> "product" collection
-- BlogPost -> "blogs" collection
+Each Pydantic model maps to a MongoDB collection (lowercased class name).
 """
+from pydantic import BaseModel, Field, EmailStr
+from typing import Optional, List
+from datetime import datetime
 
-from pydantic import BaseModel, Field
-from typing import Optional
+class Patient(BaseModel):
+    first_name: str = Field(..., description="Patient first name")
+    last_name: str = Field(..., description="Patient last name")
+    email: Optional[EmailStr] = Field(None, description="Patient email")
+    phone: Optional[str] = Field(None, description="E.164 phone number if available")
+    date_of_birth: Optional[str] = Field(None, description="YYYY-MM-DD")
+    insurance_provider: Optional[str] = Field(None, description="Insurance company name")
+    insurance_member_id: Optional[str] = Field(None, description="Insurance member/plan id")
+    address: Optional[str] = Field(None, description="Mailing address")
+    notes: Optional[str] = Field(None, description="Additional notes")
 
-# Example schemas (replace with your own):
+class Appointment(BaseModel):
+    patient_id: str = Field(..., description="Reference to patient _id as string")
+    reason: str = Field(..., description="Reason for visit / procedure")
+    start_time: str = Field(..., description="ISO 8601 start time")
+    end_time: str = Field(..., description="ISO 8601 end time")
+    provider: Optional[str] = Field(None, description="Dentist/Hygienist name")
+    status: str = Field("scheduled", description="scheduled|completed|cancelled|no_show|rescheduled")
 
-class User(BaseModel):
-    """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
-    """
-    name: str = Field(..., description="Full name")
-    email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+class Feedback(BaseModel):
+    patient_id: Optional[str] = Field(None, description="Reference to patient _id as string")
+    rating: int = Field(..., ge=1, le=5, description="1-5 stars")
+    comments: Optional[str] = Field(None, description="Free text feedback")
+    visit_date: Optional[str] = Field(None, description="YYYY-MM-DD of visit")
 
-class Product(BaseModel):
-    """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
-    """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
-
-# Add your own schemas here:
-# --------------------------------------------------
-
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+# Minimal schema to store basic logs of communications if desired
+class MessageLog(BaseModel):
+    channel: str = Field(..., description="chat|sms|call")
+    direction: str = Field(..., description="inbound|outbound")
+    content: str = Field(..., description="Message content")
+    user_context: Optional[dict] = Field(None, description="Optional JSON context like patient or intent")
+    timestamp: Optional[datetime] = None
